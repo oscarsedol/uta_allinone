@@ -49,7 +49,7 @@ if api_key:
 else:
     st.error("앗, Secrets에 GEMINI_API_KEY가 없어. 확인해줘!")
 
-# 최신 경량/고속 모델로 적용 (3.1 오타 수정)
+# 최신 경량/고속 모델로 적용 (주인 맞춤형 버전)
 MODEL_NAME = 'gemini-3.1-flash-lite'
 
 # --- 번역 가능 30개 언어 목록 & 유튜브 언어 코드 매핑 ---
@@ -349,8 +349,8 @@ with col2:
 
 st.markdown("---")
 
-# 🌐 [2단계] 글로벌 번역 설정
-st.subheader("🌐 3단계: 30개 국어 번역 타겟 선택 / 30ヶ国語の翻訳ターゲット選択")
+# 🌐 [2단계] 글로벌 번역 설정 (하드코딩된 '30' 제거)
+st.subheader("🌐 3단계: 다국어 번역 타겟 선택 / 翻訳ターゲット選択")
 btn_c1, btn_c2, _ = st.columns([1, 1, 6])
 with btn_c1: st.button("전체 선택 / 全選択", on_click=select_all, use_container_width=True, disabled=is_locked)
 with btn_c2: st.button("전체 해제 / 全解除", on_click=deselect_all, use_container_width=True, disabled=is_locked)
@@ -420,6 +420,7 @@ if st.session_state.results and not st.session_state.is_processing:
     results = st.session_state.results
     title_clean = st.session_state.video_title.strip()
     
+    # 💡 동적인 개수 계산
     success_count = len(results)
     failed_langs = [lang for lang in selected_langs if lang.split(" / ")[0] not in results]
     
@@ -439,10 +440,12 @@ if st.session_state.results and not st.session_state.is_processing:
     )
     
     st.markdown("### 🛰️ 유튜브 스튜디오 일괄 자동 전송 (API 덮어쓰기)")
-    st.info("아래 버튼을 누르면 입력한 유튜브 영상에 다국어 메타데이터와 30개국 자막이 자동으로 삽입됩니다.")
+    # 💡 30이라는 고정 숫자 대신 실제 성공 개수(success_count)로 변경
+    st.info(f"아래 버튼을 누르면 입력한 유튜브 영상에 다국어 메타데이터와 {success_count}개국 자막이 자동으로 삽입됩니다.")
     
     if st.button("🚀 유튜브 서버에 데이터 동기화 시작 (Update)", type="primary", use_container_width=True):
         with st.spinner("구글 권한 확인 및 유튜브 통신 중..."):
             success = update_youtube_video(video_url, results)
             if success:
-                st.success("🎉 대성공! 유카의 유튜브 영상에 30개 국어 정보가 완벽하게 주입되었습니다!")
+                # 💡 30이라는 고정 숫자 대신 실제 성공 개수(success_count)로 변경
+                st.success(f"🎉 대성공! 유카의 유튜브 영상에 {success_count}개 국어 정보가 완벽하게 주입되었습니다!")
