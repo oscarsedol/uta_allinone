@@ -8,6 +8,11 @@ import io
 import datetime
 from dotenv import load_dotenv
 
+# --- 🌟 추가된 구글 API 필수 라이브러리 ---
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from google.oauth2.credentials import Credentials
+
 # --- 환경변수 및 API 설정 / 環境変数およびAPI設定 ---
 load_dotenv()
 
@@ -81,9 +86,39 @@ def select_all():
 def deselect_all():
     for lang in LANGUAGES.keys(): st.session_state[f"chk_{lang}"] = False
 
-# 구글 드라이브 가상 읽기 함수
+
+# --- 🌟 추가된 유튜브 API 인증 함수 (Streamlit Secrets 연동) ---
+def get_authenticated_service():
+    """Secrets에서 인증 정보를 가져와 유튜브 API 서비스 객체를 생성합니다."""
+    # Secrets에 저장된 [gcp_oauth] 딕셔너리 정보 가져오기
+    client_config = {
+        "installed": dict(st.secrets["gcp_oauth"])
+    }
+    
+    # 유튜브 접근 권한 범위 설정
+    scopes = [
+        'https://www.googleapis.com/auth/youtube.force-ssl', 
+        'https://www.googleapis.com/auth/youtube.upload'
+    ]
+    
+    try:
+        # 파일 대신 client_config 딕셔너리로 로그인 창 호출
+        flow = InstalledAppFlow.from_client_config(client_config, scopes)
+        
+        # 브라우저를 열어 구글 로그인(유카 계정) 요청
+        credentials = flow.run_local_server(port=0)
+        
+        # 인증된 객체(youtube) 반환
+        youtube = build('youtube', 'v3', credentials=credentials)
+        return youtube
+    except Exception as e:
+        st.error(f"구글 인증 중 오류가 발생했습니다: {e}")
+        return None
+
+# 구글 드라이브 가상 읽기 함수 (추후 실제 API로 교체 예정)
 def fetch_srt_from_drive(drive_link):
     return "1\n00:00:01,000 --> 00:00:03,000\n테스트 자막입니다.\n\n2\n00:00:03,000 --> 00:00:05,000\n링크로 잘 가져옵니다."
+
 
 # --- 번역 엔진 구동 ---
 def translate_all_in_one(original_text, original_srt, orig_title, orig_desc, orig_license, target_lang, progress_bar, status_text):
@@ -132,7 +167,8 @@ def translate_all_in_one(original_text, original_srt, orig_title, orig_desc, ori
             t_label = text.split("[LICENSE_LABEL_START]")[1].split("[LICENSE_LABEL_END]")[0].strip()
             srt_part = text.split("[SRT_START]")[1].split("[SRT_END]")[0].strip()
             
-            if orig_license.strip():
+            # 🛠️ 수정: orig_license가 비어있을 때 발생하는 버그 수정
+            if orig_license and orig_license.strip():
                 t_desc_final = f"{t_desc_raw}\n\n{t_label}\n{orig_license.strip()}"
             else:
                 t_desc_final = t_desc_raw
@@ -164,8 +200,16 @@ def translate_all_in_one(original_text, original_srt, orig_title, orig_desc, ori
     return None
 
 def deploy_to_youtube_studio(video_url, thumb_url, srt_url, privacy_status, scheduled_time, translated_data):
-    time.sleep(2) 
-    return True
+    # 🌟 여기에 위에서 만든 get_authenticated_service()를 호출하여 유튜브 서버와 통신 시작!
+    youtube = get_authenticated_service()
+    
+    if youtube:
+        st.success("✅ 유튜브 계정 연동 및 권한 확인 성공! (실제 업로드 로직은 추후 연결)")
+        time.sleep(2) 
+        return True
+    else:
+        st.error("🚨 구글 인증에 실패하여 업로드를 중단합니다.")
+        return False
 
 # --- UI 레이아웃 구성 ---
 st.set_page_config(page_title="우타튜브 올인원 시스템", page_icon="🚀", layout="wide")
@@ -317,7 +361,7 @@ if st.session_state.results and not st.session_state.is_processing:
     st.info(f"아래 버튼을 누르면 구글 드라이브의 영상/자막 소스와 {success_count}개 국어 메타데이터가 유튜브 서버로 즉시 전송됩니다. / 下のボタンを押すと、すべてのデータがYouTubeサーバーに即時転送されます。")
     
     if st.button("🚀 유튜브 스튜디오로 즉시 일괄 업로드 및 세팅 시작 / アップロード開始", type="primary", use_container_width=True):
-        with st.spinner("구글 서버간 초고속 내부 백그라운드 데이터 패스 인젝션 가동 중..."):
+        with st.spinner("유튜브 인증 및 업로드 인젝션 가동 중..."):
             success = deploy_to_youtube_studio(drive_video, drive_thumb, drive_srt, privacy_status, final_schedule_time, results)
             if success:
                 st.success("🎉 대성공! 영상 파일 업로드, 썸네일/자막 드라이브 연동, 언어별 메타데이터 세팅, 그리고 지정된 날짜 예약 공개까지 완벽하게 완료되었습니다! / 完璧に完了しました！")
