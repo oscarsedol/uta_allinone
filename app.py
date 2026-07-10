@@ -244,7 +244,7 @@ def update_youtube_video(video_url, translated_data):
 
         # 다국어 메타데이터 병합
         for lang_name, data in translated_data.items():
-            en_lang_name = LANGUAGES[lang_name + " / " + lang_name.split(" / ")[1]] if " / " not in lang_name else LANGUAGES.get(lang_name)
+            en_lang_name = next((val for key, val in LANGUAGES.items() if key.startswith(lang_name)), None)
             if not en_lang_name: continue
             
             yt_code = YT_LANG_CODES.get(en_lang_name)
@@ -274,7 +274,7 @@ def update_youtube_video(video_url, translated_data):
         # [4] 자막(SRT) 업로드 루프
         success_captions = 0
         for lang_name, data in translated_data.items():
-            en_lang_name = LANGUAGES[lang_name + " / " + lang_name.split(" / ")[1]] if " / " not in lang_name else LANGUAGES.get(lang_name)
+            en_lang_name = next((val for key, val in LANGUAGES.items() if key.startswith(lang_name)), None)
             yt_code = YT_LANG_CODES.get(en_lang_name)
             
             if yt_code:
