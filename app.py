@@ -283,7 +283,7 @@ def update_youtube_video(video_url, translated_data):
                     "snippet": {
                         "videoId": video_id,
                         "language": yt_code,
-                        "name": lang_name.split(" / ")[0], # 예: "한국어"
+                        "name": "", # ✨ 무조건 이렇게 빈칸(큰따옴표 두 개)으로 둬야 해!
                         "isDraft": False
                     }
                 }
