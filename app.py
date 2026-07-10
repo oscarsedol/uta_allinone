@@ -49,7 +49,7 @@ if api_key:
 else:
     st.error("앗, Secrets에 GEMINI_API_KEY가 없어. 확인해줘!")
 
-# 최신 경량/고속 모델로 적용
+# 최신 경량/고속 모델로 적용 (3.1 오타 수정)
 MODEL_NAME = 'gemini-3.1-flash-lite'
 
 # --- 번역 가능 30개 언어 목록 & 유튜브 언어 코드 매핑 ---
@@ -123,7 +123,7 @@ def get_credentials():
         st.error(f"🚨 인증 정보 로드 실패 (Secrets 확인 필요): {e}")
         return None
 
-# --- 번역 엔진 ---
+# --- 번역 엔진 (안전장치 강화) ---
 def translate_all_in_one(original_text, original_srt, orig_title, orig_desc, orig_license, target_lang, progress_bar, status_text):
     model = genai.GenerativeModel(MODEL_NAME)
     prompt = f"""
@@ -136,6 +136,7 @@ def translate_all_in_one(original_text, original_srt, orig_title, orig_desc, ori
     2. For SRT: Keep exactly {len(original_srt)} blocks. Do not merge or split lines.
     3. Keep all brackets, symbols, and emojis exactly as they are.
     4. The Translated Title MUST be under 100 characters.
+    5. YOU MUST INCLUDE ALL EXACT TAGS: [TITLE_START], [TITLE_END], [DESC_START], [DESC_END], [LICENSE_LABEL_START], [LICENSE_LABEL_END], [SRT_START], [SRT_END]. DO NOT MISS ANY.
 
     Output strictly in this format:
     [TITLE_START]
@@ -161,10 +162,12 @@ def translate_all_in_one(original_text, original_srt, orig_title, orig_desc, ori
         if not st.session_state.is_processing: return None
         status_text.text(f"[{target_lang}] 번역 및 검수 중... / 翻訳および検証中... ({attempt}/3)")
         progress_bar.progress(int(attempt * (100 / 3)))
+        
         try:
             response = model.generate_content(prompt)
             text = response.text.strip()
             
+            # [안전장치 1] 태그가 누락되어 list out of range가 뜨면 바로 IndexError로 잡혀서 재시도 됨
             t_title = text.split("[TITLE_START]")[1].split("[TITLE_END]")[0].strip()
             t_desc_raw = text.split("[DESC_START]")[1].split("[DESC_END]")[0].strip()
             t_label = text.split("[LICENSE_LABEL_START]")[1].split("[LICENSE_LABEL_END]")[0].strip()
@@ -176,9 +179,11 @@ def translate_all_in_one(original_text, original_srt, orig_title, orig_desc, ori
                 t_desc_final = t_desc_raw
             
             translated_srt = pysrt.from_string(srt_part)
+            
+            # [안전장치 2] 자막 싱크(줄 수)가 안 맞거나 제목이 너무 길면 재시도
             if len(original_srt) != len(translated_srt) or len(t_title) > 100:
                 attempt += 1
-                time.sleep(1)
+                time.sleep(2)
                 continue
             
             final_srt_output = []
@@ -192,13 +197,21 @@ def translate_all_in_one(original_text, original_srt, orig_title, orig_desc, ori
             status_text.text(f"[{target_lang}] 완료! ({attempt}회차 성공) / 完了!")
             progress_bar.progress(100)
             return {"title": t_title, "desc": t_desc_final, "srt": "\n\n".join(final_srt_output)}
+            
+        except IndexError:
+            # 제미나이가 태그 형식을 어겨서 자르지 못했을 때 멈추지 않고 재시도
+            status_text.text(f"⚠️ [{target_lang}] 텍스트 파싱 에러! 자동 재시도 중... ({attempt}/3)")
+            attempt += 1
+            time.sleep(2)
+            continue
         except Exception as e:
             if "429" in str(e) or "Quota" in str(e):
                 status_text.text("⚠️ 한도 도달! 25초 대기... / API制限！25秒待機...")
                 time.sleep(25)
                 continue
             attempt += 1
-            time.sleep(1)
+            time.sleep(2)
+            
     return None
 
 # --- 🌟 3. 최종 유튜브 업데이트(메타데이터/자막 동기화) 로직 ---
