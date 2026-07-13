@@ -74,7 +74,7 @@ YT_LANG_CODES = {
     "Russian": "ru", "Malay": "ms", "Vietnamese": "vi", "Swedish": "sv",
     "Spanish": "es", "Arabic": "ar", "English": "en", "Uzbek": "uz",
     "Ukrainian": "uk", "Italian": "it", "Indonesian": "id", "Japanese": "ja",
-    "Simplified Chinese": "zh-CN", "Traditional Chinese (Taiwan)": "zh-TW",
+    "Simplified Chinese": "zh-Hans", "Traditional Chinese (Taiwan)": "zh-TW",
     "Traditional Chinese (Hong Kong)": "zh-HK", "Kazakh": "kk",
     "Thai": "th", "Turkish": "tr", "Persian": "fa", "Portuguese": "pt",
     "Polish": "pl", "French": "fr", "Finnish": "fi", "Filipino": "fil",
@@ -133,32 +133,24 @@ def fetch_youtube_metadata(video_url):
         st.error(f"🚨 메타데이터 불러오기 실패: {e}")
     return None, None
 
-# --- 번역 엔진 (한국어 분기 및 프롬프트 강화) ---
+# --- 번역 엔진 (1단계 메타데이터 -> 2단계 자막 순차 처리 및 피드백 적용) ---
 def translate_all_in_one(original_text, original_srt, orig_title, orig_desc, orig_license, target_lang, progress_bar, status_text):
     is_korean = target_lang == "Korean"
     # 한국어는 3.5 플래시, 나머지는 3.1 플래시 라이트 적용
     model_name = 'gemini-3.5-flash' if is_korean else 'gemini-3.1-flash-lite'
     model = genai.GenerativeModel(model_name)
     
-    prompt = f"""
-    You are an expert YouTube SEO and subtitle translator.
-    Translate the given Video Title and Description into {target_lang}.
-    ALSO, translate the exact phrase "사용된 음원 라이선스 코드" into {target_lang}.
-
+    # ==========================================
+    # [1단계] 메타데이터 (제목/설명/라이선스) 번역
+    # ==========================================
+    prompt_meta = f"""
+    You are an expert YouTube SEO translator. Translate the following YouTube Title and Description to {target_lang}.
     CRITICAL RULES:
-    1. ABSOLUTELY DO NOT output the original text. You MUST translate the content entirely into {target_lang}.
-    2. Maintain the nuance, tone, and speaking style of the original text as closely as possible. (원문의 느낌, 어조, 뉘앙스를 최대한 살려서 자연스럽게 번역하세요.)
-    3. The Translated Title MUST be under 100 characters.
-    """
-    
-    # 한국어(자막 생략) vs 타언어(자막 포함) 프롬프트 분리
-    if not is_korean:
-        prompt += f"""
-    4. For SRT: Translate the subtitles. Keep exactly {len(original_srt)} blocks. Do not merge or split lines.
-    5. Keep all brackets, symbols, and emojis exactly as they are.
-    6. YOU MUST INCLUDE ALL EXACT TAGS: [TITLE_START], [TITLE_END], [DESC_START], [DESC_END], [LICENSE_LABEL_START], [LICENSE_LABEL_END], [SRT_START], [SRT_END]. DO NOT MISS ANY.
-    
-    Output strictly in this format:
+    1. Maintain the overall structure, tone, and formatting of the original.
+    2. Keep ALL brackets, emojis, and special symbols exactly as they are.
+    3. The translated Title MUST be strictly under 100 characters (including spaces).
+    4. Translate the phrase "사용된 음원 라이선스 코드" into {target_lang}.
+    5. Output strictly in the following format without markdown code blocks:
     [TITLE_START]
     (Translated Title in {target_lang})
     [TITLE_END]
@@ -168,102 +160,154 @@ def translate_all_in_one(original_text, original_srt, orig_title, orig_desc, ori
     [LICENSE_LABEL_START]
     (Translated phrase for "사용된 음원 라이선스 코드" in {target_lang})
     [LICENSE_LABEL_END]
-    [SRT_START]
-    (Translated raw SRT text)
-    [SRT_END]
-    
-    Original Title: {orig_title}
-    Original Description: {orig_desc}
-    Original SRT:
-    {original_text}
-    """
-    else:
-        prompt += f"""
-    4. Keep all brackets, symbols, and emojis exactly as they are.
-    5. YOU MUST INCLUDE ALL EXACT TAGS: [TITLE_START], [TITLE_END], [DESC_START], [DESC_END], [LICENSE_LABEL_START], [LICENSE_LABEL_END]. DO NOT MISS ANY.
-    
-    Output strictly in this format:
-    [TITLE_START]
-    (Translated Title in {target_lang})
-    [TITLE_END]
-    [DESC_START]
-    (Translated Description in {target_lang})
-    [DESC_END]
-    [LICENSE_LABEL_START]
-    (Translated phrase for "사용된 음원 라이선스 코드" in {target_lang})
-    [LICENSE_LABEL_END]
-    
-    Original Title: {orig_title}
-    Original Description: {orig_desc}
-    """
 
-    attempt = 1
-    while attempt <= 3:
+    Original Title: {orig_title}
+    Original Description: {orig_desc}
+    """
+    
+    t_title, t_desc_raw, t_label = "", "", ""
+    meta_attempt = 1
+    meta_success = False
+    
+    while meta_attempt <= 3:
         if not st.session_state.is_processing: return None
-        status_text.text(f"[{target_lang}] 번역 및 검수 중... / 翻訳および検証中... ({attempt}/3)")
-        progress_bar.progress(int(attempt * (100 / 3)))
+        status_text.text(f"[{target_lang}] 1단계: 제목/설명 번역 중... ({meta_attempt}/3)")
+        progress_bar.progress(int(meta_attempt * (50 / 3)))
         
         try:
-            response = model.generate_content(prompt)
+            response = model.generate_content(prompt_meta)
             text = response.text.strip()
+            
+            # 태그 누락 검사
+            if "[TITLE_START]" not in text or "[DESC_START]" not in text or "[LICENSE_LABEL_START]" not in text:
+                raise ValueError("Missing Tags")
             
             t_title = text.split("[TITLE_START]")[1].split("[TITLE_END]")[0].strip()
             t_desc_raw = text.split("[DESC_START]")[1].split("[DESC_END]")[0].strip()
             t_label = text.split("[LICENSE_LABEL_START]")[1].split("[LICENSE_LABEL_END]")[0].strip()
             
-            if orig_license and orig_license.strip():
-                t_desc_final = f"{t_desc_raw}\n\n{t_label}\n{orig_license.strip()}"
-            else:
-                t_desc_final = t_desc_raw
+            # 피드백 로직: 100자 초과 시 오답 노트 제공 후 재시도
+            if len(t_title) > 100:
+                status_text.text(f"⚠️ [{target_lang}] 제목 길이 초과({len(t_title)}자). AI에게 수정 요청 중...")
+                prompt_meta += f"\n\nCorrection Request: Your previous translated title '{t_title}' is {len(t_title)} characters. It MUST be strictly under 100 characters. Please shorten it."
+                time.sleep(2)
+                meta_attempt += 1
+                continue
+                
+            meta_success = True
+            break
             
-            # 자막 처리 (한국어는 제외)
-            if not is_korean:
-                srt_part = text.split("[SRT_START]")[1].split("[SRT_END]")[0].strip()
-                translated_srt = pysrt.from_string(srt_part)
-                
-                # 안전장치: 자막 줄 수 불일치 또는 제목 길이 초과 시 재시도
-                if len(original_srt) != len(translated_srt) or len(t_title) > 100:
-                    attempt += 1
-                    time.sleep(2)
-                    continue
-                
-                final_srt_output = []
-                for i in range(len(original_srt)):
-                    orig = original_srt[i]
-                    trans_text = translated_srt[i].text
-                    start_str = f"{orig.start.hours:02}:{orig.start.minutes:02}:{orig.start.seconds:02},{orig.start.milliseconds:03}"
-                    end_str = f"{orig.end.hours:02}:{orig.end.minutes:02}:{orig.end.seconds:02},{orig.end.milliseconds:03}"
-                    final_srt_output.append(f"{orig.index}\n{start_str} --> {end_str}\n{trans_text}")
-                
-                final_srt_string = "\n\n".join(final_srt_output)
-            else:
-                # 한국어의 경우 자막 파일 없음
-                if len(t_title) > 100:
-                    attempt += 1
-                    time.sleep(2)
-                    continue
-                final_srt_string = None
-                
-            status_text.text(f"[{target_lang}] 완료! ({attempt}회차 성공) / 完了!")
-            progress_bar.progress(100)
-            return {"title": t_title, "desc": t_desc_final, "srt": final_srt_string}
-            
-        except IndexError:
-            status_text.text(f"⚠️ [{target_lang}] 텍스트 파싱 에러! 자동 재시도 중... ({attempt}/3)")
-            attempt += 1
-            time.sleep(2)
-            continue
         except Exception as e:
             if "429" in str(e) or "Quota" in str(e):
-                status_text.text("⚠️ API 한도 도달! 25초 대기... / API制限！25秒待機...")
+                status_text.text("⚠️ API 한도 도달! 25초 대기...")
                 time.sleep(25)
                 continue
-            attempt += 1
+            # 피드백 로직: 파싱 실패 시 양식 준수 재요청
+            status_text.text(f"⚠️ [{target_lang}] 텍스트 파싱 에러. 양식 수정 요청 중...")
+            prompt_meta += f"\n\nCorrection Request: Your output format was incorrect. Please strictly follow the [TITLE_START], [DESC_START], and [LICENSE_LABEL_START] tag format."
             time.sleep(2)
-            
-    return None
+            meta_attempt += 1
 
-# --- 🌟 유튜브 업데이트 로직 (자막이 없는 언어 처리 추가) ---
+    if not meta_success:
+        status_text.text(f"❌ [{target_lang}] 제목/설명 번역 3회 실패. 건너뜁니다.")
+        return None
+
+    # 라이선스 코드 병합
+    if orig_license and orig_license.strip():
+        t_desc_final = f"{t_desc_raw}\n\n{t_label}\n{orig_license.strip()}"
+    else:
+        t_desc_final = t_desc_raw
+
+    # 한국어는 자막을 처리하지 않으므로 여기서 반환
+    if is_korean:
+        status_text.text(f"[{target_lang}] 완료! (한국어 메타데이터 완성)")
+        progress_bar.progress(100)
+        return {"title": t_title, "desc": t_desc_final, "srt": None}
+
+    # ==========================================
+    # [2단계] 자막(SRT) 번역
+    # ==========================================
+    prompt_srt = f"""
+    You are an expert YouTube subtitle translator. 
+    Translate the given SRT subtitles accurately into {target_lang}.
+    
+    CRITICAL RULES:
+    1. Keep exactly {len(original_srt)} blocks. Do not merge or split subtitle lines.
+    2. TONE & NUANCE (VERY IMPORTANT): Preserve the exact tone, formality, and sentence structure of the original text.
+       - If the original text is a single word or a fragment (e.g., just a noun, exclamation), translate it as a single word or fragment. DO NOT force it into a grammatically complete sentence.
+       - If the original text is informal/casual (e.g. 반말 in Japanese/Korean), translate it into the most natural informal/casual equivalent in {target_lang}.
+       - If it is formal (존댓말/敬語), keep it formal.
+       - Capture the raw emotion, spoken vibe, and briefness exactly as it is.
+    3. Output strictly in raw SRT format inside the tags:
+    [SRT_START]
+    (Translated raw SRT text)
+    [SRT_END]
+    
+    Original SRT:
+    {original_text}
+    """
+    
+    srt_attempt = 1
+    final_srt_string = None
+    
+    while srt_attempt <= 3:
+        if not st.session_state.is_processing: return None
+        status_text.text(f"[{target_lang}] 2단계: 자막 번역 및 말투 살리는 중... ({srt_attempt}/3)")
+        progress_bar.progress(50 + int(srt_attempt * (50 / 3)))
+        
+        try:
+            response = model.generate_content(prompt_srt)
+            text = response.text.strip()
+            
+            if "[SRT_START]" not in text or "[SRT_END]" not in text:
+                raise ValueError("Missing SRT Tags")
+                
+            srt_part = text.split("[SRT_START]")[1].split("[SRT_END]")[0].strip()
+            translated_srt = pysrt.from_string(srt_part)
+            
+            # 피드백 로직: 줄 수가 다를 경우 AI에게 몇 줄이 틀렸는지 알려주고 재시도
+            if len(original_srt) != len(translated_srt):
+                status_text.text(f"⚠️ [{target_lang}] 자막 줄 수 불일치! (원문:{len(original_srt)}줄 / 번역:{len(translated_srt)}줄) AI에게 수정 요청 중...")
+                prompt_srt += f"\n\nCorrection Request: The original SRT has exactly {len(original_srt)} lines, but your translation returned {len(translated_srt)} lines. You MUST keep exactly {len(original_srt)} lines without merging or splitting them."
+                time.sleep(2)
+                srt_attempt += 1
+                continue
+            
+            # 정상적인 SRT 문자열 재조립 (타임라인 무결성 강제 보장)
+            final_srt_output = []
+            for i in range(len(original_srt)):
+                orig = original_srt[i]
+                trans_text = translated_srt[i].text
+                start_str = f"{orig.start.hours:02}:{orig.start.minutes:02}:{orig.start.seconds:02},{orig.start.milliseconds:03}"
+                end_str = f"{orig.end.hours:02}:{orig.end.minutes:02}:{orig.end.seconds:02},{orig.end.milliseconds:03}"
+                final_srt_output.append(f"{orig.index}\n{start_str} --> {end_str}\n{trans_text}")
+            
+            final_srt_string = "\n\n".join(final_srt_output)
+            break
+            
+        except Exception as e:
+            if "429" in str(e) or "Quota" in str(e):
+                status_text.text("⚠️ API 한도 도달! 25초 대기...")
+                time.sleep(25)
+                continue
+            # 파싱 에러 피드백
+            status_text.text(f"⚠️ [{target_lang}] 자막 파싱 에러. 양식 수정 요청 중...")
+            prompt_srt += f"\n\nCorrection Request: Your output format was incorrect. Please strictly provide the raw SRT text inside [SRT_START] and [SRT_END] tags."
+            time.sleep(2)
+            srt_attempt += 1
+
+    # 최종 결과 반환 (자막이 실패했더라도 메타데이터는 살림)
+    if final_srt_string:
+        status_text.text(f"[{target_lang}] 전 공정 완료! 🚀")
+        progress_bar.progress(100)
+        return {"title": t_title, "desc": t_desc_final, "srt": final_srt_string}
+    else:
+        status_text.text(f"⚠️ [{target_lang}] 자막 번역은 실패했으나 메타데이터는 살려둡니다.")
+        progress_bar.progress(100)
+        return {"title": t_title, "desc": t_desc_final, "srt": None}
+
+
+# --- 🌟 유튜브 업데이트 로직 ---
 def update_youtube_video(video_url, translated_data):
     video_id = extract_video_id(video_url)
     if not video_id: return False
@@ -312,14 +356,14 @@ def update_youtube_video(video_url, translated_data):
         st.success("✅ 메타데이터(다국어 제목/설명) 업데이트 완료!")
         time.sleep(1)
 
-        # [3] 자막 업로드 루프 (한국어 등 SRT가 None인 경우 패스)
+        # [3] 자막 업로드 루프
         st.info("🔄 자막 업로드 진행 중...")
         captions_response = youtube.captions().list(part="snippet", videoId=video_id).execute()
         existing_captions = {item['snippet']['language']: item['id'] for item in captions_response.get('items', [])}
 
         success_captions = 0
         for lang_name, data in translated_data.items():
-            if not data.get('srt'): continue # SRT 데이터가 없으면(한국어 등) 건너뜀
+            if not data.get('srt'): continue # SRT 데이터가 없으면 패스
             
             en_lang_name = next((val for key, val in LANGUAGES.items() if key.startswith(lang_name)), None)
             yt_code = YT_LANG_CODES.get(en_lang_name)
@@ -345,12 +389,13 @@ def update_youtube_video(video_url, translated_data):
                 except Exception as cap_e:
                     st.warning(f"⚠️ {lang_name} 자막 처리 중 에러 발생: {cap_e}")
 
-        st.success(f"✅ 자막 업로드 완료! ({success_captions}개 국어 자막 전송 성공 - 자막 제외 언어 패스됨)")
+        st.success(f"✅ 자막 업로드 완료! ({success_captions}개 국어 자막 전송 성공 - 자막 실패/제외 언어 패스됨)")
         return True
     
     except Exception as e:
         st.error(f"🚨 유튜브 API 통신 중 심각한 에러 발생: {e}")
         return False
+
 
 # --- UI 레이아웃 구성 ---
 st.set_page_config(page_title="우타튜브 다국어 올인원 공장", page_icon="🚀", layout="wide")
@@ -401,7 +446,6 @@ with col1:
 with col2:
     st.subheader("📋 2단계: 기준 메타데이터 / 基準メタデータ")
     
-    # 메타데이터 출처 라디오 버튼
     metadata_source = st.radio(
         "📝 메타데이터(제목/설명) 입력 방식 / メタデータ入力方式",
         options=["유튜브 스튜디오 원본 가져오기 (기본) / YouTubeスタジオから取得", "새로 직접 입력하기 / 直接入力"],
@@ -445,7 +489,6 @@ if not st.session_state.is_processing:
         elif not selected_langs: 
             st.warning("번역해서 진출할 국가를 최소 하나 이상 선택해줘.")
         else:
-            # 유튜브 자동 가져오기 모드일 경우 메타데이터 Fetch
             if "가져오기" in metadata_source:
                 with st.spinner("유튜브에서 원본 메타데이터를 불러오는 중..."):
                     fetched_title, fetched_desc = fetch_youtube_metadata(video_url)
@@ -517,14 +560,14 @@ if st.session_state.results and not st.session_state.is_processing:
     success_count = len(results)
     failed_langs = [lang for lang in selected_langs if lang.split(" / ")[0] not in results]
     
-    st.success(f"🎉 번역 완료: 총 {success_count}개 언어 성공")
+    st.success(f"🎉 작업 완료: 총 {success_count}개 언어 성공 (메타데이터 기준)")
     if failed_langs:
-        st.error(f"🚨 번역 누락 및 실패 언어 ({len(failed_langs)}개): {', '.join(failed_langs)}")
+        st.error(f"🚨 제목/설명 번역 자체 실패 언어 ({len(failed_langs)}개): {', '.join(failed_langs)}")
     
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
         for lang_name, data in results.items():
-            if data['srt']: # 한국어 등 자막이 없는 언어는 제외하고 압축
+            if data['srt']: 
                 zip_file.writestr(f"{custom_filename.strip()}_{lang_name}.srt", data['srt'].encode("utf-8-sig"))
     zip_buffer.seek(0)
     
@@ -540,4 +583,4 @@ if st.session_state.results and not st.session_state.is_processing:
         with st.spinner("구글 권한 확인 및 유튜브 통신 중..."):
             success = update_youtube_video(video_url, results)
             if success:
-                st.success(f"🎉 대성공! 유카의 유튜브 영상에 {success_count}개 국어 정보가 완벽하게 주입되었습니다!")
+                st.success(f"🎉 대성공! 유카의 유튜브 영상에 다국어 정보가 완벽하게 주입되었습니다!")
