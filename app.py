@@ -328,7 +328,7 @@ def update_youtube_video(video_url, translated_data):
                     "description": data["desc"]
                 }
         
-        # [2] 변경된 다국어 제목/설명 일괄 업데이트
+        # [2] 변경된 다국어 제목/설명 일괄 업데이트 (이건 한 방에 묶어서 전송되므로 문제없음)
         youtube.videos().update(
             part="snippet,localizations",
             body={
@@ -337,12 +337,14 @@ def update_youtube_video(video_url, translated_data):
                 "localizations": localizations
             }
         ).execute()
-        time.sleep(1)
+        time.sleep(2) # 메타데이터 반영 후 잠시 대기
 
-        # [3] 자막 업로드 루프
+        # [3] 자막 업로드 루프 (💡 1초당 전송 제한 방어 로직 추가)
         captions_response = youtube.captions().list(part="snippet", videoId=video_id).execute()
         existing_captions = {item['snippet']['language']: item['id'] for item in captions_response.get('items', [])}
 
+        progress_text = st.empty() # 실시간 업로드 현황 표시용
+        
         for lang_name, data in translated_data.items():
             if not data.get('srt'): continue
             
@@ -350,6 +352,7 @@ def update_youtube_video(video_url, translated_data):
             yt_code = YT_LANG_CODES.get(en_lang_name)
             
             if yt_code:
+                progress_text.text(f"📡 유튜브 서버에 [{lang_name}] 자막 전송 중...")
                 media = MediaIoBaseUpload(io.BytesIO(data['srt'].encode('utf-8-sig')), mimetype='application/x-subrip')
                 caption_body = {
                     "snippet": {
@@ -361,14 +364,30 @@ def update_youtube_video(video_url, translated_data):
                 }
                 
                 try:
+                    # 자막 업로드 시도
                     if yt_code in existing_captions:
                         caption_body["id"] = existing_captions[yt_code]
                         youtube.captions().update(part="snippet", body=caption_body, media_body=media).execute()
                     else:
                         youtube.captions().insert(part="snippet", body=caption_body, media_body=media).execute()
+                        
+                    # 💡 핵심: 유튜브 API의 초당 호출 제한(Rate Limit)을 피하기 위해 1.5초 휴식!
+                    time.sleep(1.5) 
+                    
                 except Exception as cap_e:
-                    st.warning(f"⚠️ {lang_name} 자막 처리 중 에러 발생: {cap_e}")
+                    # 만약 서버가 튕겨내면 3초 쉬었다가 1번 더 재시도하는 끈기 로직
+                    st.warning(f"⚠️ {lang_name} 자막 전송 일시 지연. 3초 후 재시도합니다... (에러: {cap_e})")
+                    try:
+                        time.sleep(3)
+                        if yt_code in existing_captions:
+                            youtube.captions().update(part="snippet", body=caption_body, media_body=media).execute()
+                        else:
+                            youtube.captions().insert(part="snippet", body=caption_body, media_body=media).execute()
+                        time.sleep(1.5)
+                    except Exception as retry_e:
+                        st.error(f"❌ {lang_name} 자막 최종 업로드 실패: {retry_e}")
 
+        progress_text.empty()
         return True
     
     except Exception as e:
