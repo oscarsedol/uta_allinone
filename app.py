@@ -1,5 +1,4 @@
 import streamlit as st
-# 💡 최신 공식 통합 라이브러리로 변경 완료
 from google import genai
 import os
 import pysrt
@@ -98,6 +97,7 @@ if 'is_processing' not in st.session_state: st.session_state.is_processing = Fal
 if 'results' not in st.session_state: st.session_state.results = {}
 if 'balloons_shown' not in st.session_state: st.session_state.balloons_shown = False 
 if 'upload_success' not in st.session_state: st.session_state.upload_success = False
+if 'error_logs' not in st.session_state: st.session_state.error_logs = [] # 🌟 에러 로그 저장용 배열 추가
 
 def select_all():
     for lang in LANGUAGES.keys(): st.session_state[f"chk_{lang}"] = True
@@ -122,9 +122,12 @@ def get_credentials():
         )
         return creds
     except Exception as e:
-        st.error(f"🚨 인증 정보 로드 실패 (Secrets 확인 필요): {e}")
+        err_msg = f"인증 정보 로드 실패 (Secrets 확인 필요): {e}"
+        st.error(f"🚨 {err_msg}")
+        st.session_state.error_logs.append(err_msg)
         return None
 
+# 유튜브 원본 메타데이터 가져오기 함수
 def fetch_youtube_metadata(video_url):
     video_id = extract_video_id(video_url)
     if not video_id: return None, None
@@ -137,13 +140,16 @@ def fetch_youtube_metadata(video_url):
             snippet = res['items'][0]['snippet']
             return snippet.get('title', ''), snippet.get('description', '')
     except Exception as e:
-        st.error(f"🚨 메타데이터 불러오기 실패: {e}")
+        err_msg = f"메타데이터 불러오기 실패: {e}"
+        st.error(f"🚨 {err_msg}")
+        st.session_state.error_logs.append(err_msg)
     return None, None
 
-# --- 번역 엔진 ---
-def translate_all_in_one(original_text, original_srt, orig_title, orig_desc, orig_license, target_lang, progress_bar, status_text):
+# --- 번역 엔진 (선택된 모델 사용) ---
+def translate_all_in_one(original_text, original_srt, orig_title, orig_desc, orig_license, target_lang, progress_bar, status_text, selected_model):
     is_korean = target_lang == "Korean"
-    model_name = 'gemini-3.5-flash' if is_korean else 'gemini-3.1-flash-lite'
+    # 사용자가 선택한 모델을 그대로 반영
+    model = genai.GenerativeModel(selected_model)
     
     # [1단계] 메타데이터 번역
     prompt_meta = f"""
@@ -178,11 +184,7 @@ def translate_all_in_one(original_text, original_srt, orig_title, orig_desc, ori
         progress_bar.progress(int(meta_attempt * (50 / 3)))
         
         try:
-            # 💡 최신 문법으로 수정 완료 (전역 client 객체 사용)
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt_meta
-            )
+            response = model.generate_content(prompt_meta)
             text = response.text.strip()
             
             if "[TITLE_START]" not in text or "[DESC_START]" not in text or "[LICENSE_LABEL_START]" not in text:
@@ -203,7 +205,7 @@ def translate_all_in_one(original_text, original_srt, orig_title, orig_desc, ori
             break
             
         except Exception as e:
-            if "429" in str(e) or "Quota" in str(e) or "exhausted" in str(e).lower():
+            if "429" in str(e) or "Quota" in str(e):
                 status_text.text("⚠️ API 한도 도달! 25초 대기...")
                 time.sleep(25)
                 continue
@@ -213,7 +215,9 @@ def translate_all_in_one(original_text, original_srt, orig_title, orig_desc, ori
             meta_attempt += 1
 
     if not meta_success:
-        status_text.text(f"❌ [{target_lang}] 제목/설명 번역 3회 실패. 건너뜁니다.")
+        err_msg = f"[{target_lang}] 제목/설명 번역 3회 실패. 건너뜁니다."
+        status_text.text(f"❌ {err_msg}")
+        st.session_state.error_logs.append(err_msg) # 실패 로그 저장
         return None
 
     if orig_license and orig_license.strip():
@@ -256,11 +260,7 @@ def translate_all_in_one(original_text, original_srt, orig_title, orig_desc, ori
         progress_bar.progress(50 + int(srt_attempt * (50 / 3)))
         
         try:
-            # 💡 최신 문법으로 수정 완료
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt_srt
-            )
+            response = model.generate_content(prompt_srt)
             text = response.text.strip()
             
             if "[SRT_START]" not in text or "[SRT_END]" not in text:
@@ -288,7 +288,7 @@ def translate_all_in_one(original_text, original_srt, orig_title, orig_desc, ori
             break
             
         except Exception as e:
-            if "429" in str(e) or "Quota" in str(e) or "exhausted" in str(e).lower():
+            if "429" in str(e) or "Quota" in str(e):
                 status_text.text("⚠️ API 한도 도달! 25초 대기...")
                 time.sleep(25)
                 continue
@@ -302,23 +302,29 @@ def translate_all_in_one(original_text, original_srt, orig_title, orig_desc, ori
         progress_bar.progress(100)
         return {"title": t_title, "desc": t_desc_final, "srt": final_srt_string}
     else:
-        status_text.text(f"⚠️ [{target_lang}] 자막 번역은 실패했으나 메타데이터는 살려둡니다.")
+        err_msg = f"[{target_lang}] 자막 번역 최종 실패 (메타데이터만 저장됨)"
+        status_text.text(f"⚠️ {err_msg}")
+        st.session_state.error_logs.append(err_msg)
         progress_bar.progress(100)
         return {"title": t_title, "desc": t_desc_final, "srt": None}
+
 
 # --- 🌟 유튜브 업데이트 로직 ---
 def update_youtube_video(video_url, translated_data):
     video_id = extract_video_id(video_url)
-    if not video_id: return False
+    if not video_id: 
+        st.session_state.error_logs.append("🚨 유효하지 않은 영상 링크입니다.")
+        return False
 
     creds = get_credentials()
     if not creds: return False
     youtube = build('youtube', 'v3', credentials=creds)
     
     try:
+        # [1] 기존 영상 메타데이터 불러오기 및 병합
         video_response = youtube.videos().list(part="snippet,localizations", id=video_id).execute()
         if not video_response.get('items'):
-            st.error("🚨 영상을 찾을 수 없습니다.")
+            st.session_state.error_logs.append("🚨 영상을 찾을 수 없습니다. (ID 확인 필요)")
             return False
             
         video_item = video_response['items'][0]
@@ -339,6 +345,7 @@ def update_youtube_video(video_url, translated_data):
                     "description": data["desc"]
                 }
         
+        # [2] 변경된 다국어 제목/설명 일괄 업데이트
         youtube.videos().update(
             part="snippet,localizations",
             body={
@@ -347,13 +354,12 @@ def update_youtube_video(video_url, translated_data):
                 "localizations": localizations
             }
         ).execute()
-        time.sleep(2)
+        time.sleep(1)
 
+        # [3] 자막 업로드 루프
         captions_response = youtube.captions().list(part="snippet", videoId=video_id).execute()
         existing_captions = {item['snippet']['language']: item['id'] for item in captions_response.get('items', [])}
 
-        progress_text = st.empty() 
-        
         for lang_name, data in translated_data.items():
             if not data.get('srt'): continue
             
@@ -361,7 +367,6 @@ def update_youtube_video(video_url, translated_data):
             yt_code = YT_LANG_CODES.get(en_lang_name)
             
             if yt_code:
-                progress_text.text(f"📡 유튜브 서버에 [{lang_name}] 자막 전송 중...")
                 media = MediaIoBaseUpload(io.BytesIO(data['srt'].encode('utf-8-sig')), mimetype='application/x-subrip')
                 caption_body = {
                     "snippet": {
@@ -378,27 +383,19 @@ def update_youtube_video(video_url, translated_data):
                         youtube.captions().update(part="snippet", body=caption_body, media_body=media).execute()
                     else:
                         youtube.captions().insert(part="snippet", body=caption_body, media_body=media).execute()
-                        
-                    time.sleep(1.5) 
-                    
                 except Exception as cap_e:
-                    st.warning(f"⚠️ {lang_name} 자막 전송 일시 지연. 3초 후 재시도합니다... (에러: {cap_e})")
-                    try:
-                        time.sleep(3)
-                        if yt_code in existing_captions:
-                            youtube.captions().update(part="snippet", body=caption_body, media_body=media).execute()
-                        else:
-                            youtube.captions().insert(part="snippet", body=caption_body, media_body=media).execute()
-                        time.sleep(1.5)
-                    except Exception as retry_e:
-                        st.error(f"❌ {lang_name} 자막 최종 업로드 실패: {retry_e}")
+                    err_msg = f"[{lang_name}] 자막 업로드 중 에러 발생: {cap_e}"
+                    st.warning(f"⚠️ {err_msg}")
+                    st.session_state.error_logs.append(err_msg)
 
-        progress_text.empty()
         return True
     
     except Exception as e:
-        st.error(f"🚨 유튜브 API 통신 중 심각한 에러 발생: {e}")
+        err_msg = f"유튜브 API 통신 중 심각한 에러 발생: {e}"
+        st.error(f"🚨 {err_msg}")
+        st.session_state.error_logs.append(err_msg)
         return False
+
 
 # --- UI 레이아웃 구성 ---
 st.set_page_config(page_title="우타튜브 다국어 올인원 공장", page_icon="🚀", layout="wide")
@@ -408,6 +405,7 @@ st.markdown("---")
 
 is_locked = st.session_state.is_processing
 
+# 📂 [1단계] 영상 링크 및 정보 입력
 col1, col2 = st.columns([1, 1])
 
 with col1:
@@ -415,7 +413,9 @@ with col1:
     st.info("유튜브 스튜디오에 미리 업로드한 영상의 링크와, 원본 일본어 자막을 넣어주세요.\n\nYouTubeスタジオに事前にアップロードした動画のリンクと、元の日本語字幕を入れてください。")
     
     video_url = st.text_input("🔗 유튜브 영상 링크 / YouTube動画リンク", placeholder="예: https://youtu.be/xxxxxxxxx", disabled=is_locked)
+    
     uploaded_srt = st.file_uploader("📂 원본 일본어 자막 파일 (.srt) / 元の日本語字幕ファイル", type=["srt"], disabled=is_locked)
+    
     custom_filename = st.text_input("💾 생성할 자막 파일 이름 (접두사) / 生成する字幕ファイル名 (接頭辞)", value="", placeholder="예: 영상 제목을 넣어주세요", disabled=is_locked)
     
     original_srt = None
@@ -463,6 +463,7 @@ with col2:
 
 st.markdown("---")
 
+# 🌐 [2단계] 글로벌 번역 설정
 st.subheader("🌐 3단계: 다국어 번역 타겟 선택 / 翻訳ターゲット選択")
 btn_c1, btn_c2, _ = st.columns([1, 1, 6])
 with btn_c1: st.button("전체 선택 / 全選択", on_click=select_all, use_container_width=True, disabled=is_locked)
@@ -475,8 +476,41 @@ for i, lang in enumerate(LANGUAGES.keys()):
 selected_langs = [lang for lang in LANGUAGES.keys() if st.session_state[f"chk_{lang}"]]
 st.markdown("---")
 
+# 🤖 [추가된 기능] 모델 선택 UI
+st.subheader("🤖 4단계: AI 모델 선택 / AIモデル選択")
+selected_model_name = st.radio(
+    "번역에 사용할 제미나이 AI 모델을 선택해주세요:",
+    options=["gemini-3.5-flash (권장 / 고품질)", "gemini-3.1-flash-lite (가벼운 작업 / 빠른 속도)"],
+    index=0, 
+    disabled=is_locked,
+    horizontal=True
+)
+# 실제 모델 코드 추출 ('gemini-3.5-flash' 등)
+target_model_code = selected_model_name.split(" ")[0]
+
+st.markdown("---")
+
+# ⚡ CSS 주입을 통해 Primary 버튼 글자 크기를 키우고 스타일을 강조
+st.markdown("""
+<style>
+div.stButton > button[kind="primary"] {
+    font-size: 26px !important;
+    padding: 20px !important;
+    font-weight: 900 !important;
+}
+div.stButton > button[kind="primary"] p {
+    font-size: 26px !important;
+    font-weight: 900 !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
+# ⚡ 작업 제어단
 if not st.session_state.is_processing:
-    btn_label = f"✨ 원클릭 공장 가동시작 (번역 + 유튜브 자동업로드)" if selected_langs else "✨ 공장 가동시작 (선택된 언어 없음)"
+    lang_count = len(selected_langs)
+    # 버튼에 선택된 언어 개수 동적 반영
+    btn_label = f"✨ 원클릭 공장 가동시작 (총 {lang_count}개 언어 / 번역 + 자동업로드)" if lang_count > 0 else "✨ 공장 가동시작 (선택된 언어 없음)"
     
     if st.button(btn_label, type="primary", use_container_width=True):
         if not video_url.strip(): 
@@ -486,11 +520,14 @@ if not st.session_state.is_processing:
         elif not selected_langs: 
             st.warning("번역해서 진출할 국가를 최소 하나 이상 선택해줘.")
         else:
+            # 🌟 새 작업 시작 시 에러 로그 초기화
+            st.session_state.error_logs = []
+            
             if "가져오기" in metadata_source:
                 with st.spinner("유튜브에서 원본 메타데이터를 불러오는 중..."):
                     fetched_title, fetched_desc = fetch_youtube_metadata(video_url)
                     if not fetched_title:
-                        st.error("🚨 메타데이터를 불러오지 못했어. 영상 링크가 맞는지 확인해줘!")
+                        st.error("🚨 메타데이터를 불러오지 못했어. 영상 링크가 맞는지 확인하거나 에러 로그를 확인해줘!")
                         st.stop()
                     else:
                         st.session_state.run_title = fetched_title
@@ -506,6 +543,8 @@ if not st.session_state.is_processing:
             st.session_state.results = {}
             st.session_state.balloons_shown = False 
             st.session_state.upload_success = False
+            # 세션에 선택한 모델 코드 저장
+            st.session_state.selected_model = target_model_code
             st.rerun()
 else:
     if st.button("🛑 공장 비상 정지 (작업 중단)", type="primary", use_container_width=True):
@@ -514,9 +553,10 @@ else:
         time.sleep(1)
         st.rerun()
 
+# --- 실제 번역 루프 및 ⚡ 원클릭 자동 업로드 엔진 ---
 if st.session_state.is_processing:
     total_langs = len(selected_langs)
-    st.subheader("📊 1단계: 실시간 번역 공정 진행 중 / リアルタイム翻訳中")
+    st.subheader(f"📊 실시간 번역 공정 진행 중 ({st.session_state.selected_model} 가동중)")
     
     total_bar = st.progress(0)
     total_txt = st.empty()
@@ -529,16 +569,20 @@ if st.session_state.is_processing:
         total_txt.text(f"📊 전체 공정률: {idx+1}/{total_langs} 언어 처리 중... ({clean_name})")
         
         target_lang_en = LANGUAGES[lang]
+        
+        # 선택된 모델을 인자로 넘김
         output_data = translate_all_in_one(
             original_content, original_srt, 
             st.session_state.run_title, st.session_state.run_desc, video_license, 
-            target_lang_en, lang_bar, lang_txt
+            target_lang_en, lang_bar, lang_txt,
+            st.session_state.selected_model
         )
         
         if output_data:
             st.session_state.results[clean_name] = output_data
         total_bar.progress((idx + 1) / total_langs)
         
+    # ✨ 번역이 끝나면 유튜브로 자동 원클릭 전송 시작!
     if st.session_state.results and st.session_state.is_processing:
         st.subheader("🚀 2단계: 유튜브 스튜디오 자동 동기화 중 (API 일괄 전송)")
         total_txt.text("번역 완료! 유튜브 서버에 번역된 제목/설명/자막을 밀어넣고 있습니다...")
@@ -552,6 +596,7 @@ if st.session_state.is_processing:
     st.session_state.is_processing = False
     st.rerun()
 
+# 🚀 [결과 대시보드] 원클릭 종료 후 화면
 if st.session_state.results and not st.session_state.is_processing:
     st.markdown("---")
     st.subheader("🚀 모든 작업 완료 (대시보드)")
@@ -565,14 +610,25 @@ if st.session_state.results and not st.session_state.is_processing:
     success_count = len(results)
     failed_langs = [lang for lang in selected_langs if lang.split(" / ")[0] not in results]
     
-    if st.session_state.upload_success:
-        st.success(f"🎉 대성공! {success_count}개 국어 번역 및 유튜브 스튜디오 자동 업로드가 완벽하게 끝났습니다!")
+    # --- 🚨 에러 로그 노출 UI 추가 ---
+    if st.session_state.error_logs:
+        st.error("🚨 작업 중 아래와 같은 문제(에러)들이 발생했습니다. 확인해주세요!")
+        for error in st.session_state.error_logs:
+            st.write(f"- {error}")
+        st.markdown("---")
+
+    # 종합 결과 메시지
+    if st.session_state.upload_success and not st.session_state.error_logs:
+        st.success(f"🎉 대성공! {success_count}개 국어 번역 및 유튜브 스튜디오 자동 업로드가 완벽하게 에러 없이 끝났습니다!")
+    elif st.session_state.upload_success and st.session_state.error_logs:
+        st.warning(f"⚠️ {success_count}개 언어 작업이 완료되었으나, 일부 과정에서 에러가 발생했습니다. (위의 에러 로그 참조)")
     else:
-        st.warning(f"⚠️ 번역은 {success_count}개 언어 완료되었으나, 유튜브 자동 업로드 중 문제가 발생했습니다. 에러 메시지를 확인해주세요.")
+        st.error(f"❌ 번역은 일부 완료되었으나, 유튜브 자동 업로드 중 치명적인 문제가 발생했습니다.")
         
     if failed_langs:
-        st.error(f"🚨 번역 자체 실패 언어 ({len(failed_langs)}개): {', '.join(failed_langs)}")
+        st.error(f"🚨 번역 자체를 실패한 언어 ({len(failed_langs)}개): {', '.join(failed_langs)}")
     
+    # 압축 파일 생성
     zip_buffer = io.BytesIO()
     file_prefix = custom_filename.strip() if custom_filename.strip() else "자막백업"
     
