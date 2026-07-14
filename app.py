@@ -46,13 +46,13 @@ if not st.session_state.authenticated:
 api_key = os.getenv("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY")
 if api_key:
     try:
-        # 💡 핵심: vertexai=True로 46만 원 크레딧 서버에 연결!
+        # 💡 핵심: 최신 SDK 클라이언트 생성 (vertexai=True로 46만 원 크레딧 서버에 연결)
         client = genai.Client(api_key=api_key, vertexai=True)
     except Exception as e:
-        st.error(f"🚨 제미나이 클라이언트 초기화 중 에러가 발생했어: {e}")
+        st.error(f"🚨 제미나이 클라이언트 초기화 중 에러가 발생했어: {e} / Geminiクライアントの初期化中にエラーが発生しました: {e}")
         st.stop()
 else:
-    st.error("앗, Secrets에 GEMINI_API_KEY가 없어. 확인해줘, 주인!")
+    st.error("앗, Secrets에 GEMINI_API_KEY가 없어. 확인해줘, 주인! / 앗, SecretsにGEMINI_API_KEYがありません。確認してください！")
     st.stop()
 
 # --- 번역 가능 30개 언어 목록 & 유튜브 언어 코드 매핑 ---
@@ -97,7 +97,7 @@ if 'is_processing' not in st.session_state: st.session_state.is_processing = Fal
 if 'results' not in st.session_state: st.session_state.results = {}
 if 'balloons_shown' not in st.session_state: st.session_state.balloons_shown = False 
 if 'upload_success' not in st.session_state: st.session_state.upload_success = False
-if 'error_logs' not in st.session_state: st.session_state.error_logs = [] # 🌟 에러 로그 저장용 배열 추가
+if 'error_logs' not in st.session_state: st.session_state.error_logs = [] # 🌟 에러 로그 저장용 배열
 
 def select_all():
     for lang in LANGUAGES.keys(): st.session_state[f"chk_{lang}"] = True
@@ -122,7 +122,7 @@ def get_credentials():
         )
         return creds
     except Exception as e:
-        err_msg = f"인증 정보 로드 실패 (Secrets 확인 필요): {e}"
+        err_msg = f"인증 정보 로드 실패 (Secrets 확인 필요) / 認証情報の読み込みに失敗しました（Secretsの確認が必要です）: {e}"
         st.error(f"🚨 {err_msg}")
         st.session_state.error_logs.append(err_msg)
         return None
@@ -140,16 +140,15 @@ def fetch_youtube_metadata(video_url):
             snippet = res['items'][0]['snippet']
             return snippet.get('title', ''), snippet.get('description', '')
     except Exception as e:
-        err_msg = f"메타데이터 불러오기 실패: {e}"
+        err_msg = f"메타데이터 불러오기 실패 / メタデータの読み込みに失敗しました: {e}"
         st.error(f"🚨 {err_msg}")
         st.session_state.error_logs.append(err_msg)
     return None, None
 
-# --- 번역 엔진 (선택된 모델 사용) ---
-def translate_all_in_one(original_text, original_srt, orig_title, orig_desc, orig_license, target_lang, progress_bar, status_text, selected_model):
+# --- 번역 엔진 (최신 SDK 문법 적용) ---
+def translate_all_in_one(ai_client, original_text, original_srt, orig_title, orig_desc, orig_license, target_lang, progress_bar, status_text, selected_model):
+    # 🌟 이젠 한국어든 뭐든 무조건 UI에서 선택한 selected_model을 사용함
     is_korean = target_lang == "Korean"
-    # 사용자가 선택한 모델을 그대로 반영
-    model = genai.GenerativeModel(selected_model)
     
     # [1단계] 메타데이터 번역
     prompt_meta = f"""
@@ -180,11 +179,15 @@ def translate_all_in_one(original_text, original_srt, orig_title, orig_desc, ori
     
     while meta_attempt <= 3:
         if not st.session_state.is_processing: return None
-        status_text.text(f"[{target_lang}] 1단계: 제목/설명 번역 중... ({meta_attempt}/3)")
+        status_text.text(f"[{target_lang}] 1단계: 제목/설명 번역 중... ({meta_attempt}/3) / 第1段階：タイトル/説明を翻訳中...")
         progress_bar.progress(int(meta_attempt * (50 / 3)))
         
         try:
-            response = model.generate_content(prompt_meta)
+            # 💡 최신 SDK 문법: client.models.generate_content 호출
+            response = ai_client.models.generate_content(
+                model=selected_model,
+                contents=prompt_meta
+            )
             text = response.text.strip()
             
             if "[TITLE_START]" not in text or "[DESC_START]" not in text or "[LICENSE_LABEL_START]" not in text:
@@ -195,7 +198,7 @@ def translate_all_in_one(original_text, original_srt, orig_title, orig_desc, ori
             t_label = text.split("[LICENSE_LABEL_START]")[1].split("[LICENSE_LABEL_END]")[0].strip()
             
             if len(t_title) > 100:
-                status_text.text(f"⚠️ [{target_lang}] 제목 길이 초과({len(t_title)}자). AI에게 수정 요청 중...")
+                status_text.text(f"⚠️ [{target_lang}] 제목 길이 초과({len(t_title)}자). AI에게 수정 요청 중... / タイトルの文字数超過。AIに修正をリクエスト中...")
                 prompt_meta += f"\n\nCorrection Request: Your previous translated title '{t_title}' is {len(t_title)} characters. It MUST be strictly under 100 characters. Please shorten it."
                 time.sleep(2)
                 meta_attempt += 1
@@ -206,18 +209,18 @@ def translate_all_in_one(original_text, original_srt, orig_title, orig_desc, ori
             
         except Exception as e:
             if "429" in str(e) or "Quota" in str(e):
-                status_text.text("⚠️ API 한도 도달! 25초 대기...")
+                status_text.text("⚠️ API 한도 도달! 25초 대기... / API制限に到達！25秒待機...")
                 time.sleep(25)
                 continue
-            status_text.text(f"⚠️ [{target_lang}] 텍스트 파싱 에러. 양식 수정 요청 중...")
+            status_text.text(f"⚠️ [{target_lang}] 텍스트 파싱 에러. 양식 수정 요청 중... / テキスト解析エラー。書式の修正をリクエスト中...")
             prompt_meta += f"\n\nCorrection Request: Your output format was incorrect. Please strictly follow the [TITLE_START], [DESC_START], and [LICENSE_LABEL_START] tag format."
             time.sleep(2)
             meta_attempt += 1
 
     if not meta_success:
-        err_msg = f"[{target_lang}] 제목/설명 번역 3회 실패. 건너뜁니다."
+        err_msg = f"[{target_lang}] 제목/설명 번역 3회 실패. 건너뜁니다. / タイトル/説明の翻訳に3回失敗しました。スキップします。"
         status_text.text(f"❌ {err_msg}")
-        st.session_state.error_logs.append(err_msg) # 실패 로그 저장
+        st.session_state.error_logs.append(err_msg)
         return None
 
     if orig_license and orig_license.strip():
@@ -225,8 +228,9 @@ def translate_all_in_one(original_text, original_srt, orig_title, orig_desc, ori
     else:
         t_desc_final = t_desc_raw
 
+    # 한국어는 자막 번역 생략
     if is_korean:
-        status_text.text(f"[{target_lang}] 완료! (한국어 메타데이터 완성)")
+        status_text.text(f"[{target_lang}] 완료! (한국어 메타데이터 완성) / 完了！")
         progress_bar.progress(100)
         return {"title": t_title, "desc": t_desc_final, "srt": None}
 
@@ -256,11 +260,15 @@ def translate_all_in_one(original_text, original_srt, orig_title, orig_desc, ori
     
     while srt_attempt <= 3:
         if not st.session_state.is_processing: return None
-        status_text.text(f"[{target_lang}] 2단계: 자막 번역 및 말투 살리는 중... ({srt_attempt}/3)")
+        status_text.text(f"[{target_lang}] 2단계: 자막 번역 및 말투 살리는 중... ({srt_attempt}/3) / 第2段階：字幕翻訳およびニュアンスの調整中...")
         progress_bar.progress(50 + int(srt_attempt * (50 / 3)))
         
         try:
-            response = model.generate_content(prompt_srt)
+            # 💡 최신 SDK 문법
+            response = ai_client.models.generate_content(
+                model=selected_model,
+                contents=prompt_srt
+            )
             text = response.text.strip()
             
             if "[SRT_START]" not in text or "[SRT_END]" not in text:
@@ -270,7 +278,7 @@ def translate_all_in_one(original_text, original_srt, orig_title, orig_desc, ori
             translated_srt = pysrt.from_string(srt_part)
             
             if len(original_srt) != len(translated_srt):
-                status_text.text(f"⚠️ [{target_lang}] 자막 줄 수 불일치! (원문:{len(original_srt)}줄 / 번역:{len(translated_srt)}줄) AI에게 수정 요청 중...")
+                status_text.text(f"⚠️ [{target_lang}] 자막 줄 수 불일치! AI에게 수정 요청 중... / 字幕の行数が不一致！AIに修正をリクエスト中...")
                 prompt_srt += f"\n\nCorrection Request: The original SRT has exactly {len(original_srt)} lines, but your translation returned {len(translated_srt)} lines. You MUST keep exactly {len(original_srt)} lines without merging or splitting them."
                 time.sleep(2)
                 srt_attempt += 1
@@ -289,20 +297,20 @@ def translate_all_in_one(original_text, original_srt, orig_title, orig_desc, ori
             
         except Exception as e:
             if "429" in str(e) or "Quota" in str(e):
-                status_text.text("⚠️ API 한도 도달! 25초 대기...")
+                status_text.text("⚠️ API 한도 도달! 25초 대기... / API制限に到達！25秒待機...")
                 time.sleep(25)
                 continue
-            status_text.text(f"⚠️ [{target_lang}] 자막 파싱 에러. 양식 수정 요청 중...")
+            status_text.text(f"⚠️ [{target_lang}] 자막 파싱 에러. 양식 수정 요청 중... / 字幕解析エラー。書式の修正をリクエスト中...")
             prompt_srt += f"\n\nCorrection Request: Your output format was incorrect. Please strictly provide the raw SRT text inside [SRT_START] and [SRT_END] tags."
             time.sleep(2)
             srt_attempt += 1
 
     if final_srt_string:
-        status_text.text(f"[{target_lang}] 전 공정 완료! 🚀")
+        status_text.text(f"[{target_lang}] 전 공정 완료! 🚀 / 全工程完了！ 🚀")
         progress_bar.progress(100)
         return {"title": t_title, "desc": t_desc_final, "srt": final_srt_string}
     else:
-        err_msg = f"[{target_lang}] 자막 번역 최종 실패 (메타데이터만 저장됨)"
+        err_msg = f"[{target_lang}] 자막 번역 최종 실패 (메타데이터만 저장됨) / 字幕翻訳に最終失敗（メタデータのみ保存されました）"
         status_text.text(f"⚠️ {err_msg}")
         st.session_state.error_logs.append(err_msg)
         progress_bar.progress(100)
@@ -313,7 +321,7 @@ def translate_all_in_one(original_text, original_srt, orig_title, orig_desc, ori
 def update_youtube_video(video_url, translated_data):
     video_id = extract_video_id(video_url)
     if not video_id: 
-        st.session_state.error_logs.append("🚨 유효하지 않은 영상 링크입니다.")
+        st.session_state.error_logs.append("🚨 유효하지 않은 영상 링크입니다. / 無効な動画リンクです。")
         return False
 
     creds = get_credentials()
@@ -324,7 +332,7 @@ def update_youtube_video(video_url, translated_data):
         # [1] 기존 영상 메타데이터 불러오기 및 병합
         video_response = youtube.videos().list(part="snippet,localizations", id=video_id).execute()
         if not video_response.get('items'):
-            st.session_state.error_logs.append("🚨 영상을 찾을 수 없습니다. (ID 확인 필요)")
+            st.session_state.error_logs.append("🚨 영상을 찾을 수 없습니다. (ID 확인 필요) / 動画が見つかりません。（IDの確認が必要です）")
             return False
             
         video_item = video_response['items'][0]
@@ -384,14 +392,14 @@ def update_youtube_video(video_url, translated_data):
                     else:
                         youtube.captions().insert(part="snippet", body=caption_body, media_body=media).execute()
                 except Exception as cap_e:
-                    err_msg = f"[{lang_name}] 자막 업로드 중 에러 발생: {cap_e}"
+                    err_msg = f"[{lang_name}] 자막 업로드 중 에러 발생 / 字幕アップロード中にエラー発生: {cap_e}"
                     st.warning(f"⚠️ {err_msg}")
                     st.session_state.error_logs.append(err_msg)
 
         return True
     
     except Exception as e:
-        err_msg = f"유튜브 API 통신 중 심각한 에러 발생: {e}"
+        err_msg = f"유튜브 API 통신 중 심각한 에러 발생 / YouTube APIとの通信中に深刻なエラーが発生しました: {e}"
         st.error(f"🚨 {err_msg}")
         st.session_state.error_logs.append(err_msg)
         return False
@@ -427,20 +435,20 @@ with col1:
             original_srt = pysrt.from_string(original_content)
             
             if len(original_srt) == 0:
-                st.error("🚨 자막 내용이 비어있습니다.")
+                st.error("🚨 자막 내용이 비어있습니다. / 字幕の内容が空です。")
             else:
                 is_valid = True
                 for i in range(len(original_srt)):
                     sub = original_srt[i]
                     if sub.end < sub.start:
-                        st.error(f"🚨 무결성 에러: {sub.index}번 자막의 종료 시간이 시작 시간보다 빠릅니다! 타임라인을 확인해주세요.")
+                        st.error(f"🚨 무결성 에러: {sub.index}번 자막의 종료 시간이 시작 시간보다 빠릅니다! 타임라인을 확인해주세요. / 🚨 整合性エラー: {sub.index}番の字幕の終了時間が開始時間より早いです！タイムラインを確認してください。")
                         is_valid = False
                         break
                 
                 if is_valid:
-                    st.success(f"✅ 자막 무결성 검증 완료! (총 {len(original_srt)}줄 문제없음)")
+                    st.success(f"✅ 자막 무결성 검증 완료! (총 {len(original_srt)}줄 문제없음) / ✅ 字幕の整合性検証完了！ (計 {len(original_srt)} 行問題なし)")
         except Exception as e:
-            st.error(f"🚨 자막 파일을 읽는 중 오류가 발생했습니다: {e}")
+            st.error(f"🚨 자막 파일을 읽는 중 오류가 발생했습니다: {e} / 🚨 字幕ファイルの読み込み中にエラーが発生しました: {e}")
 
 with col2:
     st.subheader("📋 2단계: 기준 메타데이터 / 基準メタデータ")
@@ -452,14 +460,14 @@ with col2:
     )
     
     if "가져오기" in metadata_source:
-        st.info("💡 공장 가동을 누르면 입력한 링크의 유튜브 영상에서 제목과 설명을 자동으로 끌어와 번역합니다.")
+        st.info("💡 공장 가동을 누르면 입력한 링크의 유튜브 영상에서 제목과 설명을 자동으로 끌어와 번역합니다. / 💡 工場稼働を押すと、入力したリンクのYouTube動画からタイトルと説明を自動で読み込んで翻訳します。")
         video_title = ""
         video_desc = ""
     else:
         video_title = st.text_input("🔤 원본 일본어 제목 (최대 100자) / 動画のタイトル", max_chars=100, disabled=is_locked)
         video_desc = st.text_area("📋 원본 일본어 설명 (최대 5000자) / 動画の説明", max_chars=5000, height=120, disabled=is_locked)
         
-    video_license = st.text_area("🎵 음원 라이선스 정보 (선택) / 音源ライセンス情報", height=85, disabled=is_locked)
+    video_license = st.text_area("🎵 음원 라이선스 정보 (선택) / 音源ライセンス情報 (選択)", height=85, disabled=is_locked)
 
 st.markdown("---")
 
@@ -479,8 +487,8 @@ st.markdown("---")
 # 🤖 [추가된 기능] 모델 선택 UI
 st.subheader("🤖 4단계: AI 모델 선택 / AIモデル選択")
 selected_model_name = st.radio(
-    "번역에 사용할 제미나이 AI 모델을 선택해주세요:",
-    options=["gemini-3.5-flash (권장 / 고품질)", "gemini-3.1-flash-lite (가벼운 작업 / 빠른 속도)"],
+    "번역에 사용할 제미나이 AI 모델을 선택해주세요: / 翻訳に使用するGemini AIモデルを選択してください:",
+    options=["gemini-3.5-flash (권장, 고품질 / 推奨, 高品質)", "gemini-3.1-flash-lite (가벼운 작업, 빠른 속도 / 軽い作業, 高速)"],
     index=0, 
     disabled=is_locked,
     horizontal=True
@@ -510,31 +518,31 @@ div.stButton > button[kind="primary"] p {
 if not st.session_state.is_processing:
     lang_count = len(selected_langs)
     # 버튼에 선택된 언어 개수 동적 반영
-    btn_label = f"✨ 원클릭 공장 가동시작 (총 {lang_count}개 언어 / 번역 + 자동업로드)" if lang_count > 0 else "✨ 공장 가동시작 (선택된 언어 없음)"
+    btn_label = f"✨ 원클릭 공장 가동시작 (총 {lang_count}개 언어 / 번역 + 자동업로드) / ワンクリック工場稼働開始" if lang_count > 0 else "✨ 공장 가동시작 (선택된 언어 없음) / 工場稼働開始 (選択された言語なし)"
     
     if st.button(btn_label, type="primary", use_container_width=True):
         if not video_url.strip(): 
-            st.warning("유튜브 영상 링크를 입력해줘, 주인.")
+            st.warning("유튜브 영상 링크를 입력해줘. / YouTube動画リンクを入力してください。")
         elif uploaded_srt is None or not original_srt: 
-            st.warning("원본 SRT 자막 파일을 업로드해줘.")
+            st.warning("원본 SRT 자막 파일을 업로드해줘. / 元のSRT字幕ファイルをアップロードしてください。")
         elif not selected_langs: 
-            st.warning("번역해서 진출할 국가를 최소 하나 이상 선택해줘.")
+            st.warning("번역해서 진출할 국가를 최소 하나 이상 선택해줘. / 翻訳して進出する国を少なくとも1つ以上選択してください。")
         else:
             # 🌟 새 작업 시작 시 에러 로그 초기화
             st.session_state.error_logs = []
             
             if "가져오기" in metadata_source:
-                with st.spinner("유튜브에서 원본 메타데이터를 불러오는 중..."):
+                with st.spinner("유튜브에서 원본 메타데이터를 불러오는 중... / YouTubeから元のメタデータを読み込み中..."):
                     fetched_title, fetched_desc = fetch_youtube_metadata(video_url)
                     if not fetched_title:
-                        st.error("🚨 메타데이터를 불러오지 못했어. 영상 링크가 맞는지 확인하거나 에러 로그를 확인해줘!")
+                        st.error("🚨 메타데이터를 불러오지 못했어. 영상 링크가 맞는지 확인하거나 에러 로그를 확인해줘! / 🚨 メタデータを読み込めませんでした。動画リンクが正しいか確認するか、エラーログを確認してください！")
                         st.stop()
                     else:
                         st.session_state.run_title = fetched_title
                         st.session_state.run_desc = fetched_desc
             else:
                 if not video_title.strip() or not video_desc.strip():
-                    st.warning("직접 입력 모드입니다. 원본 제목과 설명을 채워줘.")
+                    st.warning("직접 입력 모드입니다. 원본 제목과 설명을 채워줘. / 直接入力モードです。元のタイトルと説明を入力してください。")
                     st.stop()
                 st.session_state.run_title = video_title
                 st.session_state.run_desc = video_desc
@@ -547,16 +555,16 @@ if not st.session_state.is_processing:
             st.session_state.selected_model = target_model_code
             st.rerun()
 else:
-    if st.button("🛑 공장 비상 정지 (작업 중단)", type="primary", use_container_width=True):
+    if st.button("🛑 공장 비상 정지 (작업 중단) / 工場緊急停止 (作業中断)", type="primary", use_container_width=True):
         st.session_state.is_processing = False
-        st.warning("작업을 중단했어.")
+        st.warning("작업을 중단했어. / 作業を中断しました。")
         time.sleep(1)
         st.rerun()
 
 # --- 실제 번역 루프 및 ⚡ 원클릭 자동 업로드 엔진 ---
 if st.session_state.is_processing:
     total_langs = len(selected_langs)
-    st.subheader(f"📊 실시간 번역 공정 진행 중 ({st.session_state.selected_model} 가동중)")
+    st.subheader(f"📊 실시간 번역 공정 진행 중 ({st.session_state.selected_model} 가동중) / リアルタイム翻訳工程が進行中")
     
     total_bar = st.progress(0)
     total_txt = st.empty()
@@ -566,13 +574,13 @@ if st.session_state.is_processing:
     for idx, lang in enumerate(selected_langs):
         if not st.session_state.is_processing: break
         clean_name = lang.split(" / ")[0]
-        total_txt.text(f"📊 전체 공정률: {idx+1}/{total_langs} 언어 처리 중... ({clean_name})")
+        total_txt.text(f"📊 전체 공정률: {idx+1}/{total_langs} 언어 처리 중... ({clean_name}) / 全体進捗率: {idx+1}/{total_langs} 言語を処理中...")
         
         target_lang_en = LANGUAGES[lang]
         
-        # 선택된 모델을 인자로 넘김
+        # 💡 client와 선택된 모델을 인자로 넘김
         output_data = translate_all_in_one(
-            original_content, original_srt, 
+            client, original_content, original_srt, 
             st.session_state.run_title, st.session_state.run_desc, video_license, 
             target_lang_en, lang_bar, lang_txt,
             st.session_state.selected_model
@@ -584,12 +592,12 @@ if st.session_state.is_processing:
         
     # ✨ 번역이 끝나면 유튜브로 자동 원클릭 전송 시작!
     if st.session_state.results and st.session_state.is_processing:
-        st.subheader("🚀 2단계: 유튜브 스튜디오 자동 동기화 중 (API 일괄 전송)")
-        total_txt.text("번역 완료! 유튜브 서버에 번역된 제목/설명/자막을 밀어넣고 있습니다...")
+        st.subheader("🚀 2단계: 유튜브 스튜디오 자동 동기화 중 (API 일괄 전송) / 第2段階：YouTubeスタジオ自動同期中 (API一括送信)")
+        total_txt.text("번역 완료! 유튜브 서버에 번역된 제목/설명/자막을 밀어넣고 있습니다... / 翻訳完了！YouTubeサーバーに翻訳されたタイトル/説明/字幕をアップロードしています...")
         lang_txt.empty()
         lang_bar.empty()
         
-        with st.spinner("구글 권한 확인 및 유튜브 통신 중... (잠시만 기다려주세요)"):
+        with st.spinner("구글 권한 확인 및 유튜브 통신 중... (잠시만 기다려주세요) / Google権限の確認およびYouTubeと通信中... (しばらくお待ちください)"):
             success = update_youtube_video(video_url, st.session_state.results)
             st.session_state.upload_success = success
             
@@ -599,7 +607,7 @@ if st.session_state.is_processing:
 # 🚀 [결과 대시보드] 원클릭 종료 후 화면
 if st.session_state.results and not st.session_state.is_processing:
     st.markdown("---")
-    st.subheader("🚀 모든 작업 완료 (대시보드)")
+    st.subheader("🚀 모든 작업 완료 (대시보드) / 全ての作業が完了しました (ダッシュボード)")
     
     if not st.session_state.balloons_shown:
         if st.session_state.upload_success:
@@ -612,21 +620,21 @@ if st.session_state.results and not st.session_state.is_processing:
     
     # --- 🚨 에러 로그 노출 UI 추가 ---
     if st.session_state.error_logs:
-        st.error("🚨 작업 중 아래와 같은 문제(에러)들이 발생했습니다. 확인해주세요!")
+        st.error("🚨 작업 중 아래와 같은 문제(에러)들이 발생했습니다. 확인해주세요! / 🚨 作業中に以下の問題（エラー）が発生しました。確認してください！")
         for error in st.session_state.error_logs:
             st.write(f"- {error}")
         st.markdown("---")
 
     # 종합 결과 메시지
     if st.session_state.upload_success and not st.session_state.error_logs:
-        st.success(f"🎉 대성공! {success_count}개 국어 번역 및 유튜브 스튜디오 자동 업로드가 완벽하게 에러 없이 끝났습니다!")
+        st.success(f"🎉 대성공! {success_count}개 국어 번역 및 유튜브 스튜디오 자동 업로드가 완벽하게 에러 없이 끝났습니다! / 🎉 大成功！{success_count}ヶ国語の翻訳とYouTubeスタジオへの自動アップロードがエラーなく完全に終了しました！")
     elif st.session_state.upload_success and st.session_state.error_logs:
-        st.warning(f"⚠️ {success_count}개 언어 작업이 완료되었으나, 일부 과정에서 에러가 발생했습니다. (위의 에러 로그 참조)")
+        st.warning(f"⚠️ {success_count}개 언어 작업이 완료되었으나, 일부 과정에서 에러가 발생했습니다. (위의 에러 로그 참조) / ⚠️ {success_count}ヶ国語の作業が完了しましたが、一部のプロセスでエラーが発生しました。（上記のエラーログを参照）")
     else:
-        st.error(f"❌ 번역은 일부 완료되었으나, 유튜브 자동 업로드 중 치명적인 문제가 발생했습니다.")
+        st.error(f"❌ 번역은 일부 완료되었으나, 유튜브 자동 업로드 중 치명적인 문제가 발생했습니다. / ❌ 翻訳は一部完了しましたが、YouTubeへの自動アップロード中に致命的な問題が発生しました。")
         
     if failed_langs:
-        st.error(f"🚨 번역 자체를 실패한 언어 ({len(failed_langs)}개): {', '.join(failed_langs)}")
+        st.error(f"🚨 번역 자체를 실패한 언어 / 翻訳自体に失敗した言語 ({len(failed_langs)}개/個): {', '.join(failed_langs)}")
     
     # 압축 파일 생성
     zip_buffer = io.BytesIO()
@@ -638,9 +646,9 @@ if st.session_state.results and not st.session_state.is_processing:
                 zip_file.writestr(f"{file_prefix}_{lang_name}.srt", data['srt'].encode("utf-8-sig"))
     zip_buffer.seek(0)
     
-    st.markdown("### 💾 오프라인 자막 보관")
-    st.info("💡 브라우저 보안 정책상 파일 자동 다운로드는 지원되지 않습니다. 아래 버튼을 눌러 번역된 자막 파일들을 보관하세요.")
+    st.markdown("### 💾 오프라인 자막 보관 / オフライン字幕の保管")
+    st.info("💡 브라우저 보안 정책상 파일 자동 다운로드는 지원되지 않습니다. 아래 버튼을 눌러 번역된 자막 파일들을 보관하세요. / 💡 ブラウザのセキュリティポリシーにより、ファイルの自動ダウンロードはサポートされていません。下のボタンを押して翻訳された字幕ファイルを保管してください。")
     st.download_button(
-        label=f"📦 오프라인 자막 백업본 ({file_prefix}_자막들.zip) 수동 다운로드",
+        label=f"📦 오프라인 자막 백업본 ({file_prefix}_자막들.zip) 수동 다운로드 / オフライン字幕バックアップの手動ダウンロード",
         data=zip_buffer, file_name=f"{file_prefix}_자막들.zip", mime="application/zip", use_container_width=True
     )
