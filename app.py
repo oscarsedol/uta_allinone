@@ -488,12 +488,12 @@ st.markdown("---")
 st.subheader("🤖 4단계: AI 모델 선택 / AIモデル選択")
 selected_model_name = st.radio(
     "번역에 사용할 제미나이 AI 모델을 선택해주세요: / 翻訳に使用するGemini AIモデルを選択してください:",
-    options=["gemini-3.5-flash (권장, 고품질 / 推奨, 高品質)", "gemini-3.1-flash-lite (가벼운 작업, 빠른 속도 / 軽い作業, 高速)"],
+    options=["gemini-flash-latest (권장, 고품질 / 推奨, 高品質)", "gemini-flash-lite-latest (가벼운 작업, 빠른 속도 / 軽い作業, 高速)"],
     index=0, 
     disabled=is_locked,
     horizontal=True
 )
-# 실제 모델 코드 추출 ('gemini-3.5-flash' 등)
+# 실제 모델 코드 추출 ('gemini-flash-latest' 등)
 target_model_code = selected_model_name.split(" ")[0]
 
 st.markdown("---")
